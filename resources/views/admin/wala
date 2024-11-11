@@ -1,0 +1,194 @@
+import './bootstrap';
+import jquery from 'jquery';
+
+let meetingJoined = false;
+const meeting = new Metered.Meeting();
+let cameraOn = false;
+let micOn = false;
+let screenSharingOn = false;
+let localVideoStream = null;
+let activeSpeakerId = null;
+let meetingInfo = {};
+
+/**
+ * Detects if the device is a mobile device.
+ */
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+async function initializeView() {
+    /**
+     * Populating the cameras for desktop or mobile.
+     */
+    const videoInputDevices = await meeting.listVideoInputDevices();
+    const videoOptions = videoInputDevices.map(item =>
+        `<option value="${item.deviceId}">${item.label}</option>`
+    );
+    jquery("#cameraSelectBox").html(videoOptions.join(""));
+
+    /**
+     * Handle for mobile devices: Default to the first available camera.
+     */
+    if (isMobileDevice() && videoInputDevices.length > 0) {
+        const defaultCameraId = videoInputDevices[0].deviceId;
+        await meeting.chooseVideoInputDevice(defaultCameraId);
+        localVideoStream = await meeting.getLocalVideoStream();
+        jquery("#waitingAreaLocalVideo")[0].srcObject = localVideoStream;
+        cameraOn = true;
+    }
+
+    /**
+     * Populating Microphones
+     */
+    const audioInputDevices = await meeting.listAudioInputDevices();
+    const audioOptions = audioInputDevices.map(item =>
+        `<option value="${item.deviceId}">${item.label}</option>`
+    );
+    jquery("#microphoneSelectBox").html(audioOptions.join(""));
+
+    /**
+     * Toggle Microphone
+     */
+    jquery("#waitingAreaToggleMicrophone").on("click", function() {
+        micOn = !micOn;
+        jquery(this).toggleClass("bg-gray-400 bg-gray-500");
+    });
+
+    /**
+     * Toggle Camera
+     */
+    jquery("#waitingAreaToggleCamera").on("click", async function() {
+        if (cameraOn) {
+            stopLocalStream();
+        } else {
+            localVideoStream = await meeting.getLocalVideoStream();
+            jquery("#waitingAreaLocalVideo")[0].srcObject = localVideoStream;
+        }
+        cameraOn = !cameraOn;
+        jquery(this).toggleClass("bg-gray-400 bg-gray-500");
+    });
+
+    /**
+     * Handle camera/mic selection changes.
+     */
+    jquery("#cameraSelectBox").on("change", async function() {
+        const deviceId = jquery(this).val();
+        await meeting.chooseVideoInputDevice(deviceId);
+        if (cameraOn) {
+            localVideoStream = await meeting.getLocalVideoStream();
+            jquery("#waitingAreaLocalVideo")[0].srcObject = localVideoStream;
+        }
+    });
+
+    jquery("#microphoneSelectBox").on("change", async function() {
+        const deviceId = jquery(this).val();
+        await meeting.chooseAudioInputDevice(deviceId);
+    });
+}
+
+initializeView();
+
+/**
+ * Handle meeting join.
+ */
+jquery("#joinMeetingBtn").on("click", async function() {
+    const username = jquery("#username").val();
+    if (!username) return alert("Please enter a username");
+
+    try {
+        meetingInfo = await meeting.join({
+            roomURL: `${window.METERED_DOMAIN}/${window.MEETING_ID}`,
+            name: username,
+        });
+
+        jquery("#waitingArea").addClass("hidden");
+        jquery("#meetingView").removeClass("hidden");
+        jquery("#meetingAreaUsername").text(username);
+
+        if (cameraOn) await startVideo();
+        if (micOn) await startAudio();
+    } catch (ex) {
+        console.error("Error joining the meeting", ex);
+    }
+});
+
+/**
+ * Start/Stop Video Stream.
+ */
+async function startVideo() {
+    await meeting.startVideo();
+    jquery("#localVideoTag")[0].srcObject = localVideoStream;
+}
+
+async function stopLocalStream() {
+    const tracks = localVideoStream.getTracks();
+    tracks.forEach(track => track.stop());
+    localVideoStream = null;
+    jquery("#waitingAreaLocalVideo")[0].srcObject = null;
+}
+
+/**
+ * Handle events for participants.
+ */
+meeting.on("onlineParticipants", participants => {
+    participants.forEach(participantInfo => {
+        if (!jquery(`#participant-${participantInfo._id}`)[0] &&
+            participantInfo._id !== meeting.participantInfo._id) {
+            jquery("#remoteParticipantContainer").append(`
+                <div id="participant-${participantInfo._id}" class="w-48 h-48 bg-gray-900">
+                    <video id="video-${participantInfo._id}" autoplay></video>
+                    <div class="text-center">${participantInfo.name}</div>
+                </div>
+            `);
+        }
+    });
+});
+
+meeting.on("remoteTrackStarted", remoteTrackItem => {
+    if (remoteTrackItem.type === "video") {
+        const mediaStream = new MediaStream([remoteTrackItem.track]);
+        const videoElement = jquery(`#video-${remoteTrackItem.participantSessionId}`)[0];
+        videoElement.srcObject = mediaStream;
+        videoElement.play();
+    }
+});
+
+/**
+ * Toggle Microphone and Camera inside the meeting.
+ */
+jquery("#toggleMicrophone").on("click", async function() {
+    micOn = !micOn;
+    jquery(this).toggleClass("bg-gray-400 bg-gray-500");
+    micOn ? await meeting.startAudio() : await meeting.stopAudio();
+});
+
+jquery("#toggleCamera").on("click", async function() {
+    cameraOn = !cameraOn;
+    jquery(this).toggleClass("bg-gray-400 bg-gray-500");
+    cameraOn ? await startVideo() : await stopLocalStream();
+});
+
+/**
+ * Handle Screen Sharing.
+ */
+jquery("#toggleScreen").on("click", async function() {
+    if (screenSharingOn) {
+        await meeting.stopVideo();
+        stopLocalStream();
+    } else {
+        localVideoStream = await meeting.startScreenShare();
+        jquery("#localVideoTag")[0].srcObject = localVideoStream;
+    }
+    screenSharingOn = !screenSharingOn;
+    jquery(this).toggleClass("bg-gray-400 bg-gray-500");
+});
+
+/**
+ * Leave Meeting.
+ */
+jquery("#leaveMeeting").on("click", async function() {
+    await meeting.leaveMeeting();
+    jquery("#meetingView").addClass("hidden");
+    jquery("#leaveMeetingView").removeClass("hidden");
+});
